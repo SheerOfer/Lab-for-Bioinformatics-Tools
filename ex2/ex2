@@ -1,0 +1,208 @@
+# Bioinfotools exercise 2
+# Put your code instead of the 'pass' statements
+import random
+import re
+import Bio
+from Bio.Seq import Seq
+from Bio import SeqIO, SeqRecord, Seq, AlignIO
+from Bio import pairwise2
+from Bio import Align
+
+
+# function to read a FASTA file. Returns a string
+def read_fasta(filename):
+    f = open(filename)
+    header = f.readline()
+    x = f.read()
+    x = x.replace("\n", "")
+    return x
+
+
+# Part A
+# Scoring regime
+def score(a, b):
+    if (a == b):
+        return 3
+    elif ((a == "-" and b != "-") or (a != "-" and b == "-")):
+        return -2
+    else:
+        return -3
+
+
+def local_max_score(mat, i, j, seq1, seq2):
+    diagonal = mat[i-1][j-1] + score(seq1[i-1],seq2[j-1])
+    top = mat[i-1][j] + score(seq1[i-1], "-")
+    left = mat[i][j-1] + score("-", seq2[j-1])
+    return max(diagonal,top, left, 0)            # no negative values in local alignment matrix
+
+
+def optimal_pairwise_alignment(A, B):
+    n = len(A)
+    m = len(B)
+    max_val = -1
+    max_idx = (-1,-1)
+    alignment_mat = [[0 for j in range(m+1)] for i in range(n+1)]      # initial matrix full of 0
+
+    # Fill tha alignment matrix
+    for i in range(1,n+1):
+        for j in range(1,m+1):
+            alignment_mat[i][j] = local_max_score(alignment_mat, i, j, A, B)
+            if alignment_mat[i][j] > max_val:       # update maximum value and cell index
+                max_val = alignment_mat[i][j]
+                max_idx = (i,j)
+
+    return max_val, max_idx, alignment_mat
+
+def traceback(mat, index, seq1, seq2):
+    # backtracking the alignment
+    local_alignment1 = ""
+    local_alignment2 = ""
+    i = index[0]
+    j = index[1]
+
+    while mat[i][j] != 0:
+        diagonal = mat[i - 1][j - 1] + score(seq1[i - 1], seq2[j - 1])
+        top = mat[i - 1][j] + score(seq1[i - 1], "-")
+
+        if mat[i][j] == diagonal:
+            local_alignment1 = seq1[i-1] + local_alignment1
+            local_alignment2 = seq2[j-1] + local_alignment2
+            i -= 1
+            j -= 1
+        elif mat[i][j] == top:
+            local_alignment1 = seq1[i-1] + local_alignment1
+            local_alignment2 = "-" + local_alignment2
+            i -= 1
+        else:          # mat[i][j] == left
+            local_alignment1 = "-" + local_alignment1
+            local_alignment2 = seq2[j-1] + local_alignment2
+            j -= 1
+
+    return local_alignment1, local_alignment2
+
+
+def local_pwalignment(S, T, score=score):
+    optimal_alignment = optimal_pairwise_alignment(S, T)
+    max_val = optimal_alignment[0]
+    max_idx = optimal_alignment[1]
+    alignment_mat = optimal_alignment[2]
+
+    return max_val, traceback(alignment_mat, max_idx, S, T)
+
+
+def perm(seq):
+    shuffle_lst = list(seq)
+    random.shuffle(shuffle_lst)
+    shuffle_str = ''.join(shuffle_lst)
+    return shuffle_str
+
+
+def permutation_test(S,T, n=100):
+    alignment_score = optimal_pairwise_alignment(S,T)[0]
+    cnt = 0
+
+    for i in range(n):
+        pi1 = perm(S)
+        pi2 = perm(T)
+        random_score = optimal_pairwise_alignment(pi1,pi2)[0]
+        if random_score > alignment_score:
+            cnt += 1
+
+    if cnt/n < 0.05:
+        return True
+    else:
+        return False
+
+
+# Part B
+def calibrate_genomes(fa1, fa2, output_fasta_path):
+    # reading sequences from the files
+    seq1 = next(SeqIO.parse(fa1, 'fasta')).seq
+    seq2 = next(SeqIO.parse(fa2, 'fasta')).seq
+    len1, len2 = len(seq1), len(seq2)
+    w = min(len1//10, len2//10, 2000)
+    k = len2//4
+
+    max_score = 0
+    starting_point = 0
+    aligner = Align.PairwiseAligner()
+    aligner.mode = 'global'
+
+    for i in range(k):
+        random_idx = random.randrange(0, len2-w)
+        substring1 = seq1[:w]
+        substring2 = seq2[random_idx:random_idx + w]
+        alignments = aligner.align(substring1, substring2)
+
+        if alignments.score > max_score:
+            max_score = alignments.score
+            starting_point = random_idx
+
+    rotate_seq = seq2[starting_point:] + seq2[:starting_point]
+
+    # write the two sequences to a single fasta file
+    rec1 = SeqIO.SeqRecord(seq1, id='sequence1')
+    rec2 = SeqIO.SeqRecord(rotate_seq, id='sequence2')
+    SeqIO.write([rec1, rec2], output_fasta_path, 'fasta')
+
+    return
+
+
+def align_sequences_in_fasta(fasta_path, global_pa, m, mm, go, ge):
+    # reading sequences from the files
+    fasta_file = list(SeqIO.parse(fasta_path, 'fasta'))
+    seq1 = fasta_file[0]
+    seq2 = fasta_file[1]
+    n = min(len(seq1), len(seq2))
+    sum_scores = 0
+
+    aligner = Align.PairwiseAligner()
+    aligner.mode = 'global' if global_pa else 'local'
+    aligner.match_score = m
+    aligner.mismatch_score = mm
+    aligner.open_gap_score = go
+    aligner.extend_gap_score = ge
+
+    i = 0
+    while i+1000 < n:   # substrings of 1000 nucleotides
+        substring1 = seq1[i:i + 1000]
+        substring2 = seq2[i:i + 1000]
+        alignment = aligner.align(substring1, substring2)
+        sum_scores += alignment.score
+        i += 1000
+
+    substring1 = seq1[i:n]   # last slice
+    substring2 = seq2[i:n]
+    alignment = aligner.align(substring1, substring2)
+    sum_scores += alignment.score
+
+    return sum_scores
+
+
+if __name__ == '__main__':
+    ## Part a
+    foxp1_human_path = 'Foxp1_Homo_sapiens.fasta'
+    foxp1_mus_path = 'Foxp1_Mus_musculus.fasta'
+    foxp1_bos_path = 'Foxp1_Bos_taurus.fasta'
+    foxp1_human = read_fasta(foxp1_human_path)
+    foxp1_mus = read_fasta(foxp1_mus_path)
+    foxp1_bos = read_fasta(foxp1_bos_path)
+    print(local_pwalignment("GGTTGACTA", "TGTTACGG", score=score)[0] == 13)
+
+
+def alignment_output_file(organism1, organism2, output_file):
+    f = open(output_file, "w")
+    alignment = local_pwalignment(organism1, organism2)
+
+    # write the alignment to output
+    f.write(output_file[:-6] + "\n" + "alignment_score = " + str(alignment[0]) +"\n")
+    f.write(">first_organism" + "\n" + alignment[1][0] + "\n" + ">second_organism" + "\n" + alignment[1][1])
+    return
+
+
+alignment_output_file(foxp1_human, foxp1_mus,"Foxp1_Homo_sapiens_vs_Bos taurus.fasta")
+alignment_output_file(foxp1_human, foxp1_bos,"Foxp1_Homo_sapiens_vs_Mus_musculus.fasta")
+alignment_output_file(foxp1_mus, foxp1_bos,"Foxp1_Mus_musculus_vs_Bos taurus.fasta")
+
+
+
